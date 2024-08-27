@@ -8,30 +8,41 @@ from copy import copy as cp
 from math import ceil
 from textwrap import dedent
 
+import dust_extinction.parameter_averages as de
 import extinction
 import numpy as np
-from astropy import (cosmology, units as u)
+from astropy import cosmology
+from astropy import units as u
 from astropy.utils.misc import isiterable
-from scipy.interpolate import (
-    InterpolatedUnivariateSpline as Spline1d,
-    RectBivariateSpline as Spline2d
-)
+from scipy.interpolate import InterpolatedUnivariateSpline as Spline1d
+from scipy.interpolate import RectBivariateSpline as Spline2d
 
 from ._registry import Registry
 from .bandpasses import Bandpass, get_bandpass
 from .constants import HC_ERG_AA, MODEL_BANDFLUX_SPACING
-from .io import (
-    read_griddata_ascii, read_griddata_fits,
-    read_multivector_griddata_ascii
-)
+from .io import read_griddata_ascii, read_griddata_fits, read_multivector_griddata_ascii
 from .magsystems import get_magsystem
 from .salt2utils import BicubicInterpolator, SALT2ColorLaw
 from .utils import integration_grid
 
-__all__ = ['get_source', 'Source', 'TimeSeriesSource', 'StretchSource',
-           'SUGARSource', 'SALT2Source', 'SALT3Source', 'MLCS2k2Source',
-           'SNEMOSource', 'Model', 'PropagationEffect', 'CCM89Dust',
-           'OD94Dust', 'F99Dust']
+__all__ = [
+    "get_source",
+    "Source",
+    "TimeSeriesSource",
+    "StretchSource",
+    "SUGARSource",
+    "SALT2Source",
+    "SALT3Source",
+    "MLCS2k2Source",
+    "SNEMOSource",
+    "Model",
+    "PropagationEffect",
+    "CCM89Dust",
+    "O94Dust",
+    "old_F99Dust",
+    "F99Dust",
+    "F19Dust",
+]
 
 _SOURCES = Registry()
 
@@ -54,10 +65,12 @@ def _check_for_fitpack_error(e, a, name):
 
     # Check if the error is a specific one raise by RectBivariateSpline
     # If it is, check if supplied array is *not* monotonically increasing
-    if (len(e.args) > 0 and
-            e.args[0].startswith("Error code returned by bispev: 10") and
-            np.any(np.ediff1d(a) < 0.)):
-        raise ValueError(name + ' must be monotonically increasing')
+    if (
+        len(e.args) > 0
+        and e.args[0].startswith("Error code returned by bispev: 10")
+        and np.any(np.ediff1d(a) < 0.0)
+    ):
+        raise ValueError(name + " must be monotonically increasing")
 
 
 def get_source(name, version=None, copy=False):
@@ -103,16 +116,23 @@ def _bandflux_single(model, band, time_or_phase):
 
     # Check that bandpass wavelength range is fully contained in model
     # wavelength range.
-    if (band.minwave() < model.minwave() or band.maxwave() > model.maxwave()):
-        raise ValueError('bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
-                         'outside spectral range [{3:.6g}, .., {4:.6g}]'
-                         .format(band.name, band.minwave(), band.maxwave(),
-                                 model.minwave(), model.maxwave()))
+    if band.minwave() < model.minwave() or band.maxwave() > model.maxwave():
+        raise ValueError(
+            "bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] "
+            "outside spectral range [{3:.6g}, .., {4:.6g}]".format(
+                band.name,
+                band.minwave(),
+                band.maxwave(),
+                model.minwave(),
+                model.maxwave(),
+            )
+        )
 
     # Set up wavelength grid. Spacing (dwave) evenly divides the bandpass,
     # closest to 5 angstroms without going over.
-    wave, dwave = integration_grid(band.minwave(), band.maxwave(),
-                                   MODEL_BANDFLUX_SPACING)
+    wave, dwave = integration_grid(
+        band.minwave(), band.maxwave(), MODEL_BANDFLUX_SPACING
+    )
     trans = band(wave)
     f = model._flux(time_or_phase, wave)
 
@@ -127,14 +147,15 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
     """
 
     if zp is not None and zpsys is None:
-        raise ValueError('zpsys must be given if zp is not None')
+        raise ValueError("zpsys must be given if zp is not None")
 
     # broadcast arrays
     if zp is None:
         time_or_phase, band = np.broadcast_arrays(time_or_phase, band)
     else:
-        time_or_phase, band, zp, zpsys = \
-            np.broadcast_arrays(time_or_phase, band, zp, zpsys)
+        time_or_phase, band, zp, zpsys = np.broadcast_arrays(
+            time_or_phase, band, zp, zpsys
+        )
 
     # Convert all to 1-d arrays.
     ndim = time_or_phase.ndim  # Save input ndim for return val.
@@ -155,7 +176,7 @@ def _bandflux(model, band, time_or_phase, zp, zpsys):
         fsum = _bandflux_single(model, b, time_or_phase[mask])
 
         if zp is not None:
-            zpnorm = 10.**(0.4 * zp[mask])
+            zpnorm = 10.0 ** (0.4 * zp[mask])
             bandzpsys = zpsys[mask]
             for ms in set(bandzpsys):
                 mask2 = bandzpsys == ms
@@ -177,7 +198,7 @@ def _bandmag(model, band, magsys, time_or_phase):
     """
     bandflux = _bandflux(model, band, time_or_phase, None, None)
     band, magsys, bandflux = np.broadcast_arrays(band, magsys, bandflux)
-    return_scalar = (band.ndim == 0)
+    return_scalar = band.ndim == 0
     band = band.ravel()
     magsys = magsys.ravel()
     bandflux = bandflux.ravel()
@@ -247,16 +268,18 @@ class _ModelBase(object):
         return self._parameters[i]
 
     def _headsummary(self):
-        return ''
+        return ""
 
     def __str__(self):
-        parameter_lines = [self._headsummary(), 'parameters:']
+        parameter_lines = [self._headsummary(), "parameters:"]
         if len(self._param_names) > 0:
             m = max(map(len, self._param_names))
-            extralines = ['  ' + k.ljust(m) + ' = ' + repr(v)
-                          for k, v in zip(self._param_names, self._parameters)]
+            extralines = [
+                "  " + k.ljust(m) + " = " + repr(v)
+                for k, v in zip(self._param_names, self._parameters)
+            ]
             parameter_lines.extend(extralines)
-        return '\n'.join(parameter_lines)
+        return "\n".join(parameter_lines)
 
     def __copy__(self):
         """Like a normal shallow copy, but makes an actual copy of the
@@ -337,13 +360,12 @@ class Source(_ModelBase):
         phase = np.asarray(phase)
         wave = np.asarray(wave)
         if np.any(wave < self.minwave()) or np.any(wave > self.maxwave()):
-            raise ValueError('requested wavelength value(s) outside '
-                             'model range')
+            raise ValueError("requested wavelength value(s) outside " "model range")
         try:
             f = self._flux(phase, wave)
         except ValueError as e:
-            _check_for_fitpack_error(e, phase, 'phase')
-            _check_for_fitpack_error(e, wave, 'wave')
+            _check_for_fitpack_error(e, phase, "phase")
+            _check_for_fitpack_error(e, wave, "wave")
             raise e
 
         if phase.ndim == 0:
@@ -383,7 +405,7 @@ class Source(_ModelBase):
         try:
             return _bandflux(self, band, phase, zp, zpsys)
         except ValueError as e:
-            _check_for_fitpack_error(e, phase, 'phase')
+            _check_for_fitpack_error(e, phase, "phase")
             raise e
 
     def bandmag(self, band, magsys, phase):
@@ -408,7 +430,7 @@ class Source(_ModelBase):
         """
         return _bandmag(self, band, magsys, phase)
 
-    def peakphase(self, band_or_wave, sampling=1.):
+    def peakphase(self, band_or_wave, sampling=1.0):
         """Determine phase of maximum flux for the given band/wavelength.
 
         This method generates the light curve in the given band/wavelength and
@@ -418,7 +440,7 @@ class Source(_ModelBase):
         """
 
         # Array of phases to sample at.
-        nsamples = int(ceil((self.maxphase()-self.minphase()) / sampling)) + 1
+        nsamples = int(ceil((self.maxphase() - self.minphase()) / sampling)) + 1
         phases = np.linspace(self.minphase(), self.maxphase(), nsamples)
 
         if isinstance(band_or_wave, (str, Bandpass)):
@@ -430,9 +452,9 @@ class Source(_ModelBase):
         if (i == 0) or (i == len(phases) - 1):
             return phases[i]
 
-        x = phases[i-1: i+2]
-        y = fluxes[i-1: i+2]
-        A = np.hstack([x.reshape(3, 1)**2, x.reshape(3, 1), np.ones((3, 1))])
+        x = phases[i - 1 : i + 2]
+        y = fluxes[i - 1 : i + 2]
+        A = np.hstack([x.reshape(3, 1) ** 2, x.reshape(3, 1), np.ones((3, 1))])
         a, b, c = np.linalg.solve(A, y)
         return -b / (2 * a)
 
@@ -446,18 +468,19 @@ class Source(_ModelBase):
         """Set peak apparent magnitude in rest-frame bandpass."""
 
         m_current = self.peakmag(band, magsys, sampling=sampling)
-        factor = 10.**(0.4 * (m_current - m))
+        factor = 10.0 ** (0.4 * (m_current - m))
         self._parameters[0] = factor * self._parameters[0]
 
     def __repr__(self):
-        name = ''
-        version = ''
+        name = ""
+        version = ""
         if self.name is not None:
-            name = ' {0!r:s}'.format(self.name)
+            name = " {0!r:s}".format(self.name)
         if self.version is not None:
-            version = ' version={0!r:s}'.format(self.version)
+            version = " version={0!r:s}".format(self.version)
         return "<{0:s}{1:s}{2:s} at 0x{3:x}>".format(
-            self.__class__.__name__, name, version, id(self))
+            self.__class__.__name__, name, version, id(self)
+        )
 
     def _headsummary(self):
         summary = """\
@@ -465,11 +488,15 @@ class Source(_ModelBase):
         name       : {1!r}
         version    : {2}
         phases     : [{3:.6g}, .., {4:.6g}] days
-        wavelengths: [{5:.6g}, .., {6:.6g}] Angstroms"""\
-        .format(
-            self.__class__.__name__, self.name, self.version,
-            self.minphase(), self.maxphase(),
-            self.minwave(), self.maxwave())
+        wavelengths: [{5:.6g}, .., {6:.6g}] Angstroms""".format(
+            self.__class__.__name__,
+            self.name,
+            self.version,
+            self.minphase(),
+            self.maxphase(),
+            self.minwave(),
+            self.maxwave(),
+        )
         return dedent(summary)
 
 
@@ -517,25 +544,32 @@ class TimeSeriesSource(Source):
         Version of the model. Default is `None`.
     """
 
-    _param_names = ['amplitude']
-    param_names_latex = ['A']
+    _param_names = ["amplitude"]
+    param_names_latex = ["A"]
 
-    def __init__(self, phase, wave, flux, zero_before=False,
-                 time_spline_degree=3, name=None, version=None):
+    def __init__(
+        self,
+        phase,
+        wave,
+        flux,
+        zero_before=False,
+        time_spline_degree=3,
+        name=None,
+        version=None,
+    ):
         self.name = name
         self.version = version
         self._phase = phase
         self._wave = wave
-        self._parameters = np.array([1.])
-        self._model_flux = Spline2d(phase, wave, flux, kx=time_spline_degree,
-                                    ky=3)
+        self._parameters = np.array([1.0])
+        self._model_flux = Spline2d(phase, wave, flux, kx=time_spline_degree, ky=3)
         self._zero_before = zero_before
 
     def _flux(self, phase, wave):
         f = self._parameters[0] * self._model_flux(phase, wave)
         if self._zero_before:
             mask = np.atleast_1d(phase) < self.minphase()
-            f[mask, :] = 0.
+            f[mask, :] = 0.0
         return f
 
 
@@ -562,15 +596,15 @@ class StretchSource(Source):
         Must have shape `(num_phases, num_disp)`.
     """
 
-    _param_names = ['amplitude', 's']
-    param_names_latex = ['A', 's']
+    _param_names = ["amplitude", "s"]
+    param_names_latex = ["A", "s"]
 
     def __init__(self, phase, wave, flux, name=None, version=None):
         self.name = name
         self.version = version
         self._phase = phase
         self._wave = wave
-        self._parameters = np.array([1., 1.])
+        self._parameters = np.array([1.0, 1.0])
         self._model_flux = Spline2d(phase, wave, flux, kx=3, ky=3)
 
     def minphase(self):
@@ -580,8 +614,7 @@ class StretchSource(Source):
         return self._parameters[1] * self._phase[-1]
 
     def _flux(self, phase, wave):
-        return (self._parameters[0] *
-                self._model_flux(phase / self._parameters[1], wave))
+        return self._parameters[0] * self._model_flux(phase / self._parameters[1], wave)
 
 
 class SUGARSource(Source):
@@ -632,56 +665,63 @@ class SUGARSource(Source):
     The "2-d grid" files have the format ``<phase> <wavelength>
     <value>`` on each line.
     """
-    _param_names = ['q0', 'q1', 'q2', 'q3', 'Av']
-    param_names_latex = ['q_0', 'q_1', 'q_2', 'q_3', 'A_v']
 
-    def __init__(self, modeldir=None,
-                 m0file='sugar_template_0.dat',
-                 alpha1file='sugar_template_1.dat',
-                 alpha2file='sugar_template_2.dat',
-                 alpha3file='sugar_template_3.dat',
-                 CCMfile='sugar_template_4.dat',
-                 name=None, version=None):
+    _param_names = ["q0", "q1", "q2", "q3", "Av"]
+    param_names_latex = ["q_0", "q_1", "q_2", "q_3", "A_v"]
+
+    def __init__(
+        self,
+        modeldir=None,
+        m0file="sugar_template_0.dat",
+        alpha1file="sugar_template_1.dat",
+        alpha2file="sugar_template_2.dat",
+        alpha3file="sugar_template_3.dat",
+        CCMfile="sugar_template_4.dat",
+        name=None,
+        version=None,
+    ):
 
         self.name = name
         self.version = version
         self._model = {}
-        self.M_keys = ['M0', 'ALPHA1', 'ALPHA2', 'ALPHA3', 'CCM']
+        self.M_keys = ["M0", "ALPHA1", "ALPHA2", "ALPHA3", "CCM"]
         self._parameters = np.zeros(len(self.M_keys))
         self._parameters[0] = 1e-15
-        names_or_objs = {'M0': m0file,
-                         'ALPHA1': alpha1file,
-                         'ALPHA2': alpha2file,
-                         'ALPHA3': alpha3file,
-                         'CCM': CCMfile}
+        names_or_objs = {
+            "M0": m0file,
+            "ALPHA1": alpha1file,
+            "ALPHA2": alpha2file,
+            "ALPHA3": alpha3file,
+            "CCM": CCMfile,
+        }
 
         # Make filenames into full paths.
         if modeldir is not None:
             for k in names_or_objs:
                 v = names_or_objs[k]
-                if (v is not None and isinstance(v, str)):
+                if v is not None and isinstance(v, str):
                     names_or_objs[k] = os.path.join(modeldir, v)
 
         for i, key in enumerate(self.M_keys):
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
             self._model[key] = BicubicInterpolator(phase, wave, values)
-            if key == 'M0':
+            if key == "M0":
                 # The "native" phases and wavelengths of the model are those
-                self._phase = np.linspace(-12., 48, 21)
+                self._phase = np.linspace(-12.0, 48, 21)
                 self._wave = wave
 
     def _flux(self, phase, wave):
-        mag_sugar = self._model['M0'](phase, wave)
+        mag_sugar = self._model["M0"](phase, wave)
         for i, key in enumerate(self.M_keys):
-            if key != 'M0':
+            if key != "M0":
                 comp = self._model[key](phase, wave) * self._parameters[i]
                 mag_sugar += comp
         # Mag AB used in the training of SUGAR.
         mag_sugar += 48.59
-        wave_factor = (wave ** 2 / 299792458. * 1.e-10)
-        flux = (self._parameters[0] * 10. ** (-0.4 * mag_sugar) / wave_factor)
+        wave_factor = wave**2 / 299792458.0 * 1.0e-10
+        flux = self._parameters[0] * 10.0 ** (-0.4 * mag_sugar) / wave_factor
 
-        if hasattr(phase, '__iter__'):
+        if hasattr(phase, "__iter__"):
             not_define = ~((phase > -12) & (phase < 48))
             flux[not_define] = 0
             return flux
@@ -751,85 +791,105 @@ class SALT2Source(Source):
     # v11file = 'salt2_spec_variance_1.dat'              : 2dgrid
     # v01file = 'salt2_spec_covariance_01.dat'           : 2dgrid
 
-    _param_names = ['x0', 'x1', 'c']
-    param_names_latex = ['x_0', 'x_1', 'c']
+    _param_names = ["x0", "x1", "c"]
+    param_names_latex = ["x_0", "x_1", "c"]
     _SCALE_FACTOR = 1e-12
 
-    def __init__(self, modeldir=None,
-                 m0file='salt2_template_0.dat',
-                 m1file='salt2_template_1.dat',
-                 clfile='salt2_color_correction.dat',
-                 cdfile='salt2_color_dispersion.dat',
-                 errscalefile='salt2_lc_dispersion_scaling.dat',
-                 lcrv00file='salt2_lc_relative_variance_0.dat',
-                 lcrv11file='salt2_lc_relative_variance_1.dat',
-                 lcrv01file='salt2_lc_relative_covariance_01.dat',
-                 name=None, version=None):
+    def __init__(
+        self,
+        modeldir=None,
+        m0file="salt2_template_0.dat",
+        m1file="salt2_template_1.dat",
+        clfile="salt2_color_correction.dat",
+        cdfile="salt2_color_dispersion.dat",
+        errscalefile="salt2_lc_dispersion_scaling.dat",
+        lcrv00file="salt2_lc_relative_variance_0.dat",
+        lcrv11file="salt2_lc_relative_variance_1.dat",
+        lcrv01file="salt2_lc_relative_covariance_01.dat",
+        name=None,
+        version=None,
+    ):
         self.name = name
         self.version = version
         self._model = {}
-        self._parameters = np.array([1., 0., 0.])
+        self._parameters = np.array([1.0, 0.0, 0.0])
 
-        names_or_objs = {'M0': m0file, 'M1': m1file,
-                         'LCRV00': lcrv00file, 'LCRV11': lcrv11file,
-                         'LCRV01': lcrv01file, 'errscale': errscalefile,
-                         'cdfile': cdfile, 'clfile': clfile}
+        names_or_objs = {
+            "M0": m0file,
+            "M1": m1file,
+            "LCRV00": lcrv00file,
+            "LCRV11": lcrv11file,
+            "LCRV01": lcrv01file,
+            "errscale": errscalefile,
+            "cdfile": cdfile,
+            "clfile": clfile,
+        }
 
         # Make filenames into full paths.
         if modeldir is not None:
             for k in names_or_objs:
                 v = names_or_objs[k]
-                if (v is not None and isinstance(v, str)):
+                if v is not None and isinstance(v, str):
                     names_or_objs[k] = os.path.join(modeldir, v)
 
         # model components are interpolated to 2nd order
-        for key in ['M0', 'M1']:
+        for key in ["M0", "M1"]:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
             values *= self._SCALE_FACTOR
             self._model[key] = BicubicInterpolator(phase, wave, values)
 
             # The "native" phases and wavelengths of the model are those
             # of the first model component.
-            if key == 'M0':
+            if key == "M0":
                 self._phase = phase
                 self._wave = wave
 
         # model covariance is interpolated to 1st order
-        for key in ['LCRV00', 'LCRV11', 'LCRV01', 'errscale']:
+        for key in ["LCRV00", "LCRV11", "LCRV01", "errscale"]:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
             self._model[key] = BicubicInterpolator(phase, wave, values)
 
         # Set the colorlaw based on the "color correction" file.
-        self._set_colorlaw_from_file(names_or_objs['clfile'])
+        self._set_colorlaw_from_file(names_or_objs["clfile"])
 
         # Set the color dispersion from "color_dispersion" file
-        w, val = np.loadtxt(names_or_objs['cdfile'], unpack=True)
-        self._colordisp = Spline1d(w, val,  k=1)  # linear interp.
+        w, val = np.loadtxt(names_or_objs["cdfile"], unpack=True)
+        self._colordisp = Spline1d(w, val, k=1)  # linear interp.
 
     def _flux(self, phase, wave):
-        m0 = self._model['M0'](phase, wave)
-        m1 = self._model['M1'](phase, wave)
-        return (self._parameters[0] * (m0 + self._parameters[1] * m1) *
-                10. ** (-0.4 * self._colorlaw(wave) * self._parameters[2]))
+        m0 = self._model["M0"](phase, wave)
+        m1 = self._model["M1"](phase, wave)
+        return (
+            self._parameters[0]
+            * (m0 + self._parameters[1] * m1)
+            * 10.0 ** (-0.4 * self._colorlaw(wave) * self._parameters[2])
+        )
 
     def _bandflux_rvar_single(self, band, phase):
         """Model relative variance for a single bandpass."""
 
         # Raise an exception if bandpass is out of model range.
-        if (band.minwave() < self._wave[0] or band.maxwave() > self._wave[-1]):
-            raise ValueError('bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
-                             'outside spectral range [{3:.6g}, .., {4:.6g}]'
-                             .format(band.name, band.wave[0], band.wave[-1],
-                                     self._wave[0], self._wave[-1]))
+        if band.minwave() < self._wave[0] or band.maxwave() > self._wave[-1]:
+            raise ValueError(
+                "bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] "
+                "outside spectral range [{3:.6g}, .., {4:.6g}]".format(
+                    band.name,
+                    band.wave[0],
+                    band.wave[-1],
+                    self._wave[0],
+                    self._wave[-1],
+                )
+            )
 
         x1 = self._parameters[1]
 
         # integrate m0 and m1 components
-        wave, dwave = integration_grid(band.minwave(), band.maxwave(),
-                                       MODEL_BANDFLUX_SPACING)
+        wave, dwave = integration_grid(
+            band.minwave(), band.maxwave(), MODEL_BANDFLUX_SPACING
+        )
         trans = band(wave)
-        m0 = self._model['M0'](phase, wave)
-        m1 = self._model['M1'](phase, wave)
+        m0 = self._model["M0"](phase, wave)
+        m1 = self._model["M1"](phase, wave)
         tmp = trans * wave
         f0 = np.sum(m0 * tmp, axis=1) * dwave / HC_ERG_AA
         m1int = np.sum(m1 * tmp, axis=1) * dwave / HC_ERG_AA
@@ -837,10 +897,10 @@ class SALT2Source(Source):
 
         # In the following, the "[:,0]" reduces from a 2-d array of shape
         # (nphase, 1) to a 1-d array.
-        lcrv00 = self._model['LCRV00'](phase, band.wave_eff)[:, 0]
-        lcrv11 = self._model['LCRV11'](phase, band.wave_eff)[:, 0]
-        lcrv01 = self._model['LCRV01'](phase, band.wave_eff)[:, 0]
-        scale = self._model['errscale'](phase, band.wave_eff)[:, 0]
+        lcrv00 = self._model["LCRV00"](phase, band.wave_eff)[:, 0]
+        lcrv11 = self._model["LCRV11"](phase, band.wave_eff)[:, 0]
+        lcrv01 = self._model["LCRV01"](phase, band.wave_eff)[:, 0]
+        scale = self._model["errscale"](phase, band.wave_eff)[:, 0]
 
         v = lcrv00 + 2.0 * x1 * lcrv01 + x1 * x1 * lcrv11
 
@@ -851,11 +911,11 @@ class SALT2Source(Source):
         v[v < 0.0] = 0.0001
 
         # avoid warnings due to evaluating 0. / 0. in f0 / ftot
-        with np.errstate(invalid='ignore'):
-            result = v * (f0 / ftot)**2 * scale**2
+        with np.errstate(invalid="ignore"):
+            result = v * (f0 / ftot) ** 2 * scale**2
 
         # treat cases where ftot is negative the same as snfit
-        result[ftot <= 0.0] = 10000.
+        result[ftot <= 0.0] = 10000.0
 
         return result
 
@@ -948,7 +1008,7 @@ class SALT2Source(Source):
 
         # Read file
         if isinstance(name_or_obj, str):
-            f = open(name_or_obj, 'r')
+            f = open(name_or_obj, "r")
         else:
             f = name_or_obj
         words = f.read().split()
@@ -956,19 +1016,19 @@ class SALT2Source(Source):
 
         # Get colorlaw coeffecients.
         ncoeffs = int(words[0])
-        colorlaw_coeffs = [float(word) for word in words[1: 1 + ncoeffs]]
+        colorlaw_coeffs = [float(word) for word in words[1 : 1 + ncoeffs]]
 
         # If there are more than 1+ncoeffs words in the file, we expect them to
         # be of the form `keyword value`.
         version = None
-        colorlaw_range = [3000., 7000.]
-        for i in range(1+ncoeffs, len(words), 2):
-            if words[i] == 'Salt2ExtinctionLaw.version':
-                version = int(words[i+1])
-            elif words[i] == 'Salt2ExtinctionLaw.min_lambda':
-                colorlaw_range[0] = float(words[i+1])
-            elif words[i] == 'Salt2ExtinctionLaw.max_lambda':
-                colorlaw_range[1] = float(words[i+1])
+        colorlaw_range = [3000.0, 7000.0]
+        for i in range(1 + ncoeffs, len(words), 2):
+            if words[i] == "Salt2ExtinctionLaw.version":
+                version = int(words[i + 1])
+            elif words[i] == "Salt2ExtinctionLaw.min_lambda":
+                colorlaw_range[0] = float(words[i + 1])
+            elif words[i] == "Salt2ExtinctionLaw.max_lambda":
+                colorlaw_range[1] = float(words[i + 1])
             else:
                 raise RuntimeError("Unexpected keyword: {}".format(words[i]))
 
@@ -978,8 +1038,7 @@ class SALT2Source(Source):
         elif version == 1:
             self._colorlaw = SALT2ColorLaw(colorlaw_range, colorlaw_coeffs)
         else:
-            raise RuntimeError('unrecognized Salt2ExtinctionLaw.version: ' +
-                               version)
+            raise RuntimeError("unrecognized Salt2ExtinctionLaw.version: " + version)
 
     def colorlaw(self, wave=None):
         """Return the value of the CL function for the given wavelengths.
@@ -1061,92 +1120,108 @@ class SALT3Source(SALT2Source):
 
     """
 
-    _param_names = ['x0', 'x1', 'c']
-    param_names_latex = ['x_0', 'x_1', 'c']
+    _param_names = ["x0", "x1", "c"]
+    param_names_latex = ["x_0", "x_1", "c"]
     _SCALE_FACTOR = 1e-12
 
-    def __init__(self, modeldir=None,
-                 m0file='salt3_template_0.dat',
-                 m1file='salt3_template_1.dat',
-                 clfile='salt3_color_correction.dat',
-                 cdfile='salt3_color_dispersion.dat',
-                 lcrv00file='salt3_lc_variance_0.dat',
-                 lcrv11file='salt3_lc_variance_1.dat',
-                 lcrv01file='salt3_lc_covariance_01.dat',
-                 name=None, version=None):
+    def __init__(
+        self,
+        modeldir=None,
+        m0file="salt3_template_0.dat",
+        m1file="salt3_template_1.dat",
+        clfile="salt3_color_correction.dat",
+        cdfile="salt3_color_dispersion.dat",
+        lcrv00file="salt3_lc_variance_0.dat",
+        lcrv11file="salt3_lc_variance_1.dat",
+        lcrv01file="salt3_lc_covariance_01.dat",
+        name=None,
+        version=None,
+    ):
 
         self.name = name
         self.version = version
         self._model = {}
-        self._parameters = np.array([1., 0., 0.])
+        self._parameters = np.array([1.0, 0.0, 0.0])
 
-        names_or_objs = {'M0': m0file, 'M1': m1file,
-                         'LCRV00': lcrv00file, 'LCRV11': lcrv11file,
-                         'LCRV01': lcrv01file,
-                         'cdfile': cdfile, 'clfile': clfile}
+        names_or_objs = {
+            "M0": m0file,
+            "M1": m1file,
+            "LCRV00": lcrv00file,
+            "LCRV11": lcrv11file,
+            "LCRV01": lcrv01file,
+            "cdfile": cdfile,
+            "clfile": clfile,
+        }
 
         # Make filenames into full paths.
         if modeldir is not None:
             for k in names_or_objs:
                 v = names_or_objs[k]
-                if (v is not None and isinstance(v, str)):
+                if v is not None and isinstance(v, str):
                     names_or_objs[k] = os.path.join(modeldir, v)
 
         # model components are interpolated to 2nd order
-        for key in ['M0', 'M1']:
+        for key in ["M0", "M1"]:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
             values *= self._SCALE_FACTOR
             self._model[key] = BicubicInterpolator(phase, wave, values)
 
             # The "native" phases and wavelengths of the model are those
             # of the first model component.
-            if key == 'M0':
+            if key == "M0":
                 self._phase = phase
                 self._wave = wave
 
         # model covariance is interpolated to 1st order
-        for key in ['LCRV00', 'LCRV11', 'LCRV01']:
+        for key in ["LCRV00", "LCRV11", "LCRV01"]:
             phase, wave, values = read_griddata_ascii(names_or_objs[key])
-            values *= self._SCALE_FACTOR**2.
+            values *= self._SCALE_FACTOR**2.0
             self._model[key] = BicubicInterpolator(phase, wave, values)
 
         # Set the colorlaw based on the "color correction" file.
-        self._set_colorlaw_from_file(names_or_objs['clfile'])
+        self._set_colorlaw_from_file(names_or_objs["clfile"])
 
         # Set the color dispersion from "color_dispersion" file
-        w, val = np.loadtxt(names_or_objs['cdfile'], unpack=True)
-        self._colordisp = Spline1d(w, val,  k=1)  # linear interp.
+        w, val = np.loadtxt(names_or_objs["cdfile"], unpack=True)
+        self._colordisp = Spline1d(w, val, k=1)  # linear interp.
 
     def _bandflux_rvar_single(self, band, phase):
         """Model relative variance for a single bandpass."""
 
         # Raise an exception if bandpass is out of model range.
-        if (band.minwave() < self._wave[0] or band.maxwave() > self._wave[-1]):
-            raise ValueError('bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] '
-                             'outside spectral range [{3:.6g}, .., {4:.6g}]'
-                             .format(band.name, band.wave[0], band.wave[-1],
-                                     self._wave[0], self._wave[-1]))
+        if band.minwave() < self._wave[0] or band.maxwave() > self._wave[-1]:
+            raise ValueError(
+                "bandpass {0!r:s} [{1:.6g}, .., {2:.6g}] "
+                "outside spectral range [{3:.6g}, .., {4:.6g}]".format(
+                    band.name,
+                    band.wave[0],
+                    band.wave[-1],
+                    self._wave[0],
+                    self._wave[-1],
+                )
+            )
 
         x1 = self._parameters[1]
 
         # integrate m0 and m1 components
-        wave, dwave = integration_grid(band.minwave(), band.maxwave(),
-                                       MODEL_BANDFLUX_SPACING)
+        wave, dwave = integration_grid(
+            band.minwave(), band.maxwave(), MODEL_BANDFLUX_SPACING
+        )
         trans = band(wave)
-        m0 = self._model['M0'](phase, wave)
-        m1 = self._model['M1'](phase, wave)
+        m0 = self._model["M0"](phase, wave)
+        m1 = self._model["M1"](phase, wave)
         tmp = trans * wave
 
         # evaluate avg M0 + x1*M1 across a bandpass
-        f0 = np.sum(m0 * tmp, axis=1)/tmp.sum()
-        m1int = np.sum(m1 * tmp, axis=1)/tmp.sum()
+        f0 = np.sum(m0 * tmp, axis=1) / tmp.sum()
+        m1int = np.sum(m1 * tmp, axis=1) / tmp.sum()
         ftot = f0 + x1 * m1int
 
         # In the following, the "[:,0]" reduces from a 2-d array of shape
         # (nphase, 1) to a 1-d array.
-        lcrv00 = self._model['LCRV00'](phase, band.wave_eff)[:, 0]
-        lcrv11 = self._model['LCRV11'](phase, band.wave_eff)[:, 0]
-        lcrv01 = self._model['LCRV01'](phase, band.wave_eff)[:, 0]
+        lcrv00 = self._model["LCRV00"](phase, band.wave_eff)[:, 0]
+        lcrv11 = self._model["LCRV11"](phase, band.wave_eff)[:, 0]
+        lcrv01 = self._model["LCRV01"](phase, band.wave_eff)[:, 0]
 
         # variance in M0 + x1*M1 at the effective wavelength
         # of a bandpass
@@ -1159,12 +1234,12 @@ class SALT3Source(SALT2Source):
         v[v < 0.0] = 0.0001
 
         # avoid warnings due to evaluating 0. / 0. in f0 / ftot
-        with np.errstate(invalid='ignore'):
+        with np.errstate(invalid="ignore"):
             # turn M0+x1*M1 error into a relative error
-            result = v/ftot**2.
+            result = v / ftot**2.0
 
         # treat cases where ftot is negative the same as snfit
-        result[ftot <= 0.0] = 10000.
+        result[ftot <= 0.0] = 10000.0
         return result
 
 
@@ -1192,8 +1267,8 @@ class MLCS2k2Source(Source):
         and wavelength values.
     """
 
-    _param_names = ['amplitude', 'delta']
-    param_names_latex = ['A', '\\Delta']
+    _param_names = ["amplitude", "delta"]
+    param_names_latex = ["A", "\\Delta"]
 
     def __init__(self, fluxfile, name=None, version=None):
 
@@ -1203,23 +1278,24 @@ class MLCS2k2Source(Source):
             from scipy.interpolate import RegularGridInterpolator
         except ImportError:
             import scipy  # to get scipy version
-            raise ImportError("scipy version 0.14 or greater required for "
-                              "MLCS2k2Source. Installed version: " +
-                              scipy.__version__)
+
+            raise ImportError(
+                "scipy version 0.14 or greater required for "
+                "MLCS2k2Source. Installed version: " + scipy.__version__
+            )
 
         self.name = name
         self.version = version
-        self._parameters = np.array([1., 0.])
+        self._parameters = np.array([1.0, 0.0])
 
         delta, phase, wave, values = read_griddata_fits(fluxfile)
 
         self._phase = phase
         self._wave = wave
         self._delta = delta
-        self._3d_model_flux = RegularGridInterpolator((delta, phase, wave),
-                                                      values,
-                                                      bounds_error=False,
-                                                      fill_value=0.)
+        self._3d_model_flux = RegularGridInterpolator(
+            (delta, phase, wave), values, bounds_error=False, fill_value=0.0
+        )
 
     def _flux(self, phase, wave):
         # "outer cartesian product" code from fast cartesian_product2 from
@@ -1232,8 +1308,7 @@ class MLCS2k2Source(Source):
         for i, a in enumerate(np.ix_(*arrays)):
             arr[..., i] = a
         points = arr.reshape((-1, 3))
-        return (self._parameters[0] *
-                self._3d_model_flux(points).reshape(lp, lw))
+        return self._parameters[0] * self._3d_model_flux(points).reshape(lp, lw)
 
 
 class SNEMOSource(Source):
@@ -1256,6 +1331,7 @@ class SNEMOSource(Source):
         and wavelength values. Assuming columns ``phase``, ``wavelength``,
         ``e_0``, ``e_1``, ``e_2``...
     """
+
     def __init__(self, fluxfile, name=None, version=None):
         self.name = name
         self.version = version
@@ -1263,36 +1339,67 @@ class SNEMOSource(Source):
         phase, wave, values = read_multivector_griddata_ascii(fluxfile)
         n_vector = values.shape[0]
 
-        self._parameters = np.zeros(n_vector+1)
+        self._parameters = np.zeros(n_vector + 1)
         self._parameters[0] = 1
 
-        _param_names = ['c0', 'As', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7',
-                        'c8', 'c9', 'c10', 'c11', 'c12', 'c13', 'c14']
-        param_names_latex = ['c_0', 'A_s', 'c_1', 'c_2', 'c_3', 'c_4', 'c_5',
-                             'c_6', 'c_7', 'c_8', 'c_9', 'c_{10}', 'c_{11}',
-                             'c_{12}', 'c_{13}', 'c_{14}']
-        self._param_names = _param_names[:n_vector + 1]
-        self.param_names_latex = param_names_latex[:n_vector + 1]
+        _param_names = [
+            "c0",
+            "As",
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+            "c7",
+            "c8",
+            "c9",
+            "c10",
+            "c11",
+            "c12",
+            "c13",
+            "c14",
+        ]
+        param_names_latex = [
+            "c_0",
+            "A_s",
+            "c_1",
+            "c_2",
+            "c_3",
+            "c_4",
+            "c_5",
+            "c_6",
+            "c_7",
+            "c_8",
+            "c_9",
+            "c_{10}",
+            "c_{11}",
+            "c_{12}",
+            "c_{13}",
+            "c_{14}",
+        ]
+        self._param_names = _param_names[: n_vector + 1]
+        self.param_names_latex = param_names_latex[: n_vector + 1]
 
         self._phase = phase
         self._wave = wave
 
-        self._model_fluxes = np.array([Spline2d(phase, wave,
-                                                v, kx=2, ky=2)
-                                       for v in values])
+        self._model_fluxes = np.array(
+            [Spline2d(phase, wave, v, kx=2, ky=2) for v in values]
+        )
 
     def _flux(self, phase, wave):
         c_0 = self._parameters[0]
         A_s = self._parameters[1]
         color = extinction.fm07(wave * u.angstrom, A_s)
-        model_fluxes = np.array([mf(phase, wave) for mf
-                                 in self._model_fluxes])
+        model_fluxes = np.array([mf(phase, wave) for mf in self._model_fluxes])
 
-        model_ev = c_0 * (model_fluxes[0] +
-                          (self._parameters[2:, None, None] *
-                           model_fluxes[1:]).sum(axis=0))
+        model_ev = c_0 * (
+            model_fluxes[0]
+            + (self._parameters[2:, None, None] * model_fluxes[1:]).sum(axis=0)
+        )
 
-        model_c = 10**(-0.4 * color)
+        model_c = 10 ** (-0.4 * color)
 
         return model_ev * model_c
 
@@ -1325,11 +1432,10 @@ class Model(_ModelBase):
 
     """
 
-    def __init__(self, source, effects=None,
-                 effect_names=None, effect_frames=None):
+    def __init__(self, source, effects=None, effect_names=None, effect_frames=None):
         # Set parameter names, initial values (inital values set to zero)
-        self._param_names = ['z', 't0']
-        self.param_names_latex = ['z', 't_0']
+        self._param_names = ["z", "t0"]
+        self.param_names_latex = ["z", "t_0"]
         self._parameters = np.zeros(2, dtype=float)
 
         # Set source and add source parameter names
@@ -1341,20 +1447,23 @@ class Model(_ModelBase):
         self._effects = []
         self._effect_names = []
         self._effect_frames = []
-        if (effects is not None or effect_names is not None or
-                effect_frames is not None):
+        if effects is not None or effect_names is not None or effect_frames is not None:
             try:
-                same_length = (len(effects) == len(effect_names) and
-                               len(effects) == len(effect_frames))
+                same_length = len(effects) == len(effect_names) and len(effects) == len(
+                    effect_frames
+                )
             except TypeError:
-                raise TypeError('effects, effect_names, and effect_frames '
-                                'should all be iterables.')
+                raise TypeError(
+                    "effects, effect_names, and effect_frames "
+                    "should all be iterables."
+                )
             if not same_length:
-                raise ValueError('effects, effect_names and effect_frames '
-                                 'must have matching lengths')
+                raise ValueError(
+                    "effects, effect_names and effect_frames "
+                    "must have matching lengths"
+                )
 
-            for effect, name, frame in zip(effects, effect_names,
-                                           effect_frames):
+            for effect, name, frame in zip(effects, effect_names, effect_frames):
                 self._add_effect_partial(effect, name, frame)
 
         # sync
@@ -1396,23 +1505,22 @@ class Model(_ModelBase):
         """Like 'add effect', but don't sync parameter arrays"""
 
         if not isinstance(effect, PropagationEffect):
-            raise TypeError('effect is not a PropagationEffect')
-        if frame not in ['rest', 'obs', 'free']:
+            raise TypeError("effect is not a PropagationEffect")
+        if frame not in ["rest", "obs", "free"]:
             raise ValueError("frame must be one of: {'rest', 'obs', 'free'}")
         self._effects.append(cp(effect))
         self._effect_names.append(name)
         self._effect_frames.append(frame)
 
         # for 'free' effects, add a redshift parameter
-        if frame == 'free':
-            self._param_names.append(name + 'z')
-            self.param_names_latex.append('{\\rm ' + name + '}\\,z')
+        if frame == "free":
+            self._param_names.append(name + "z")
+            self.param_names_latex.append("{\\rm " + name + "}\\,z")
 
         # add all of this effect's parameters
         for param_name in effect.param_names:
             self._param_names.append(name + param_name)
-            self.param_names_latex.append('{\\rm ' + name + '}\\,' +
-                                          param_name)
+            self.param_names_latex.append("{\\rm " + name + "}\\," + param_name)
 
     def _sync_parameter_arrays(self):
         """Synchronize parameter names and parameter arrays between
@@ -1440,7 +1548,7 @@ class Model(_ModelBase):
         # Calculate total length of model's parameter array
         l = 2 + len(self._source._parameters)
         for effect, frame in zip(self._effects, self._effect_frames):
-            l += (frame == 'free') + len(effect._parameters)
+            l += (frame == "free") + len(effect._parameters)
 
         # allocate new array (zeros so that new 'free' effects redshifts
         # initialize to 0)
@@ -1449,13 +1557,13 @@ class Model(_ModelBase):
         # copy old parameters: we do this to make sure we copy
         # non-default values of any parameters that the model alone
         # holds, such as z, t0 and effect redshifts.
-        self._parameters[0:len(old_parameters)] = old_parameters
+        self._parameters[0 : len(old_parameters)] = old_parameters
 
         # cross-reference source's parameters
         pos = 2
         l = len(self._source._parameters)
-        self._parameters[pos:pos+l] = self._source._parameters  # copy
-        self._source._parameters = self._parameters[pos:pos+l]  # reference
+        self._parameters[pos : pos + l] = self._source._parameters  # copy
+        self._source._parameters = self._parameters[pos : pos + l]  # reference
         pos += l
 
         # initialize a list of ints that keeps track of where the redshift
@@ -1467,7 +1575,7 @@ class Model(_ModelBase):
             effect = self._effects[i]
 
             # for 'free' effects, add a redshift parameter
-            if self._effect_frames[i] == 'free':
+            if self._effect_frames[i] == "free":
                 self._effect_zindicies.append(pos)
                 pos += 1
             else:
@@ -1475,8 +1583,8 @@ class Model(_ModelBase):
 
             # add all of this effect's parameters
             l = len(effect._parameters)
-            self._parameters[pos:pos+l] = effect._parameters  # copy
-            effect._parameters = self._parameters[pos:pos+l]  # reference
+            self._parameters[pos : pos + l] = effect._parameters  # copy
+            effect._parameters = self._parameters[pos : pos + l]  # reference
             pos += l
 
     def _update_description(self):
@@ -1487,52 +1595,56 @@ class Model(_ModelBase):
         if all([name is None for name in names]):
             self.description = None
         else:
-            names = ['?' if name is None else name for name in names]
-            self.description = '+'.join(names)
+            names = ["?" if name is None else name for name in names]
+            self.description = "+".join(names)
 
     def mintime(self):
         """Minimum observer-frame time at which the model is defined."""
-        return (self._parameters[1] +
-                (1. + self._parameters[0]) * self._source.minphase())
+        return (
+            self._parameters[1] + (1.0 + self._parameters[0]) * self._source.minphase()
+        )
 
     def maxtime(self):
         """Maximum observer-frame time at which the model is defined."""
-        return (self._parameters[1] +
-                (1. + self._parameters[0]) * self._source.maxphase())
+        return (
+            self._parameters[1] + (1.0 + self._parameters[0]) * self._source.maxphase()
+        )
 
     def minwave(self):
         """Minimum observer-frame wavelength of the model."""
-        source_shift = (1. + self._parameters[0])
+        source_shift = 1.0 + self._parameters[0]
         max_minwave = self._source.minwave() * source_shift
-        for effect, frame, zindex in zip(self._effects, self._effect_frames,
-                                         self._effect_zindicies):
+        for effect, frame, zindex in zip(
+            self._effects, self._effect_frames, self._effect_zindicies
+        ):
             effect_minwave = effect.minwave()
-            if frame == 'rest':
+            if frame == "rest":
                 effect_minwave *= source_shift
-            elif frame == 'free':
-                effect_minwave *= (1. + self._parameters[zindex])
+            elif frame == "free":
+                effect_minwave *= 1.0 + self._parameters[zindex]
             if effect_minwave > max_minwave:
                 max_minwave = effect_minwave
         return max_minwave
 
     def maxwave(self):
         """Maximum observer-frame wavelength of the model."""
-        source_shift = (1. + self._parameters[0])
+        source_shift = 1.0 + self._parameters[0]
         min_maxwave = self._source.maxwave() * source_shift
-        for effect, frame, zindex in zip(self._effects, self._effect_frames,
-                                         self._effect_zindicies):
+        for effect, frame, zindex in zip(
+            self._effects, self._effect_frames, self._effect_zindicies
+        ):
             effect_maxwave = effect.maxwave()
-            if frame == 'rest':
+            if frame == "rest":
                 effect_maxwave *= source_shift
-            elif frame == 'free':
-                effect_maxwave *= (1. + self._parameters[zindex])
+            elif frame == "free":
+                effect_maxwave *= 1.0 + self._parameters[zindex]
             if effect_maxwave < min_maxwave:
                 min_maxwave = effect_maxwave
         return min_maxwave
 
     def _baseflux(self, time, wave):
         """Array flux function."""
-        a = 1. / (1. + self._parameters[0])
+        a = 1.0 / (1.0 + self._parameters[0])
         phase = (time - self._parameters[1]) * a
         restwave = wave * a
 
@@ -1545,8 +1657,8 @@ class Model(_ModelBase):
     def _flux(self, time, wave):
         """Array flux function."""
 
-        a = 1. / (1. + self._parameters[0])
-        obsphase = (time - self._parameters[1])
+        a = 1.0 / (1.0 + self._parameters[0])
+        obsphase = time - self._parameters[1]
         restphase = obsphase * a
         restwave = wave * a
 
@@ -1555,16 +1667,17 @@ class Model(_ModelBase):
         f = a * self._source._flux(restphase, restwave)
 
         # Pass the flux through the PropagationEffects.
-        for effect, frame, zindex in zip(self._effects, self._effect_frames,
-                                         self._effect_zindicies):
-            if frame == 'obs':
+        for effect, frame, zindex in zip(
+            self._effects, self._effect_frames, self._effect_zindicies
+        ):
+            if frame == "obs":
                 effect_wave = wave
                 effect_phase = obsphase
-            elif frame == 'rest':
+            elif frame == "rest":
                 effect_wave = restwave
                 effect_phase = restphase
             else:  # frame == 'free'
-                effect_a = 1. / (1. + self._parameters[zindex])
+                effect_a = 1.0 / (1.0 + self._parameters[zindex])
                 effect_wave = wave * effect_a
                 effect_phase = obsphase * effect_a
             try:
@@ -1596,15 +1709,14 @@ class Model(_ModelBase):
 
         # Check wavelength values
         if np.any(wave < self.minwave()) or np.any(wave > self.maxwave()):
-            raise ValueError('requested wavelength value(s) outside '
-                             'model range')
+            raise ValueError("requested wavelength value(s) outside " "model range")
 
         # Get the flux
         try:
             f = self._flux(time, wave)
         except ValueError as e:
-            _check_for_fitpack_error(e, time, 'time')
-            _check_for_fitpack_error(e, wave, 'wave')
+            _check_for_fitpack_error(e, time, "time")
+            _check_for_fitpack_error(e, wave, "wave")
             raise e
 
         # Return array according to dimension of inputs.
@@ -1641,11 +1753,12 @@ class Model(_ModelBase):
         band = band.ravel()
         z = z.ravel()
         overlap = np.empty((len(band), len(z)), dtype=bool)
-        shift = (1. + z)/(1+self._parameters[0])
+        shift = (1.0 + z) / (1 + self._parameters[0])
         for i, b in enumerate(band):
             b = get_bandpass(b)
-            overlap[i, :] = ((b.minwave() > self.minwave() * shift) &
-                             (b.maxwave() < self.maxwave() * shift))
+            overlap[i, :] = (b.minwave() > self.minwave() * shift) & (
+                b.maxwave() < self.maxwave() * shift
+            )
         if ndim == (0, 0):
             return overlap[0, 0]
         if ndim[1] == 0:
@@ -1683,7 +1796,7 @@ class Model(_ModelBase):
         try:
             return _bandflux(self, band, time, zp, zpsys)
         except ValueError as e:
-            _check_for_fitpack_error(e, time, 'time')
+            _check_for_fitpack_error(e, time, "time")
             raise e
 
     def _bandflux_rcov(self, band, time):
@@ -1697,7 +1810,7 @@ class Model(_ModelBase):
             Time(s) in days. Must be in ascending order.
         """
 
-        a = 1. / (1. + self._parameters[0])
+        a = 1.0 / (1.0 + self._parameters[0])
 
         # convert to 1-d arrays
         time, band = np.broadcast_arrays(time, band)
@@ -1706,7 +1819,7 @@ class Model(_ModelBase):
         band = np.atleast_1d(band)
 
         # Convert `band` to an array of rest-frame bands
-        restband = np.empty(len(time), dtype='object')
+        restband = np.empty(len(time), dtype="object")
         for b in set(band):
             mask = band == b
             b = get_bandpass(b)
@@ -1808,11 +1921,10 @@ class Model(_ModelBase):
         if band1_isiterable or band2_isiterable:
             raise TypeError("Band arguments must be scalars.")
 
-        if (isiterable(magsys) and not isinstance(magsys, str)):
+        if isiterable(magsys) and not isinstance(magsys, str):
             raise TypeError("Magnitude system argument must be scalar.")
 
-        return (self.bandmag(band1, magsys, time) -
-                self.bandmag(band2, magsys, time))
+        return self.bandmag(band1, magsys, time) - self.bandmag(band2, magsys, time)
 
     def source_peakmag(self, band, magsys, sampling=1.0):
         """Peak apparent magnitude of source in a rest-frame bandpass.
@@ -1859,8 +1971,7 @@ class Model(_ModelBase):
         """
         self._source.set_peakmag(m, band, magsys, sampling=sampling)
 
-    def source_peakabsmag(self, band, magsys, sampling=1.0,
-                          cosmo=cosmology.WMAP9):
+    def source_peakabsmag(self, band, magsys, sampling=1.0, cosmo=cosmology.WMAP9):
         """Peak absolute magnitude of the source in rest-frame bandpass.
 
         Note that this is the peak absolute magnitude of just the *source*
@@ -1885,11 +1996,14 @@ class Model(_ModelBase):
         float
             Peak absolute magnitude of just the source component of the model.
         """
-        return (self._source.peakmag(band, magsys, sampling=sampling) -
-                cosmo.distmod(self._parameters[0]).value)
+        return (
+            self._source.peakmag(band, magsys, sampling=sampling)
+            - cosmo.distmod(self._parameters[0]).value
+        )
 
-    def set_source_peakabsmag(self, absmag, band, magsys, sampling=1.0,
-                              cosmo=cosmology.WMAP9):
+    def set_source_peakabsmag(
+        self, absmag, band, magsys, sampling=1.0, cosmo=cosmology.WMAP9
+    ):
         """Set the amplitude of the source component of the model according to
         the desired absolute magnitude in the specified band.
 
@@ -1910,28 +2024,31 @@ class Model(_ModelBase):
             is WMAP9.
         """
 
-        if self._parameters[0] <= 0.:
-            raise ValueError('absolute magnitude undefined when z<=0.')
+        if self._parameters[0] <= 0.0:
+            raise ValueError("absolute magnitude undefined when z<=0.")
         m = absmag + cosmo.distmod(self._parameters[0]).value
         self._source.set_peakmag(m, band, magsys, sampling=sampling)
 
     def _headsummary(self):
         head = "<{0:s} at 0x{1:x}>".format(self.__class__.__name__, id(self))
-        s = 'source:\n' + self._source._headsummary()
-        summaries = [head, s.replace('\n', '\n  ')]
-        for effect, name, frame in zip(self._effects,
-                                       self._effect_names,
-                                       self._effect_frames):
-            s = ('effect (name={0} frame={1}):\n{2}'
-                 .format(repr(name), repr(frame), effect._headsummary()))
-            summaries.append(s.replace('\n', '\n  '))
-        return '\n'.join(summaries)
+        s = "source:\n" + self._source._headsummary()
+        summaries = [head, s.replace("\n", "\n  ")]
+        for effect, name, frame in zip(
+            self._effects, self._effect_names, self._effect_frames
+        ):
+            s = "effect (name={0} frame={1}):\n{2}".format(
+                repr(name), repr(frame), effect._headsummary()
+            )
+            summaries.append(s.replace("\n", "\n  "))
+        return "\n".join(summaries)
 
     def __copy__(self):
-        new = Model(self._source,
-                    effects=self._effects,
-                    effect_names=self._effect_names,
-                    effect_frames=self._effect_frames)
+        new = Model(
+            self._source,
+            effects=self._effects,
+            effect_names=self._effect_names,
+            effect_frames=self._effect_frames,
+        )
         new._parameters[:] = self._parameters
         return new
 
@@ -1974,22 +2091,26 @@ class PropagationEffect(_ModelBase):
         summary = """\
         class           : {0}
         wavelength range: [{1:.6g}, {2:.6g}] Angstroms
-        phase range     : [{3:.2g}, {4:.2g}]"""\
-        .format(self.__class__.__name__,
-                self._minwave, self._maxwave,
-                self.minphase(), self.maxphase())
+        phase range     : [{3:.2g}, {4:.2g}]""".format(
+            self.__class__.__name__,
+            self._minwave,
+            self._maxwave,
+            self.minphase(),
+            self.maxphase(),
+        )
         return dedent(summary)
 
 
-class CCM89Dust(PropagationEffect):
+class old_CCM89Dust(PropagationEffect):
     """Cardelli, Clayton, Mathis (1989) extinction model dust."""
-    _param_names = ['ebv', 'r_v']
-    param_names_latex = ['E(B-V)', 'R_V']
-    _minwave = 1000.
+
+    _param_names = ["ebv", "r_v"]
+    param_names_latex = ["E(B-V)", "R_V"]
+    _minwave = 1000.0
     _maxwave = 33333.33
 
     def __init__(self):
-        self._parameters = np.array([0., 3.1])
+        self._parameters = np.array([0.0, 3.1])
 
     def propagate(self, wave, flux, phase=None):
         """Propagate the flux."""
@@ -1997,32 +2118,33 @@ class CCM89Dust(PropagationEffect):
         return extinction.apply(extinction.ccm89(wave, ebv * r_v, r_v), flux)
 
 
-class OD94Dust(PropagationEffect):
+class old_OD94Dust(PropagationEffect):
     """O'Donnell (1994) extinction model dust."""
-    _param_names = ['ebv', 'r_v']
-    param_names_latex = ['E(B-V)', 'R_V']
+
+    _param_names = ["ebv", "r_v"]
+    param_names_latex = ["E(B-V)", "R_V"]
     _minwave = 909.09
     _maxwave = 33333.33
 
     def __init__(self):
-        self._parameters = np.array([0., 3.1])
+        self._parameters = np.array([0.0, 3.1])
 
     def propagate(self, wave, flux, phase=None):
         """Propagate the flux."""
         ebv, r_v = self._parameters
-        return extinction.apply(extinction.odonnell94(wave, ebv * r_v, r_v),
-                                flux)
+        return extinction.apply(extinction.odonnell94(wave, ebv * r_v, r_v), flux)
 
 
-class F99Dust(PropagationEffect):
+class old_F99Dust(PropagationEffect):
     """Fitzpatrick (1999) extinction model dust with fixed R_V."""
+
     _minwave = 909.09
-    _maxwave = 60000.
+    _maxwave = 60000.0
 
     def __init__(self, r_v=3.1):
-        self._param_names = ['ebv']
-        self.param_names_latex = ['E(B-V)']
-        self._parameters = np.array([0.])
+        self._param_names = ["ebv"]
+        self.param_names_latex = ["E(B-V)"]
+        self._parameters = np.array([0.0])
         self._r_v = r_v
         self._f = extinction.Fitzpatrick99(r_v=r_v)
 
@@ -2030,3 +2152,73 @@ class F99Dust(PropagationEffect):
         """Propagate the flux."""
         ebv = self._parameters[0]
         return extinction.apply(self._f(wave, ebv * self._r_v), flux)
+
+
+class CCM89Dust(PropagationEffect):
+    """Cardelli, Clayton, Mathis (1989) extinction model dust."""
+
+    _param_names = ["ebv", "r_v"]
+    param_names_latex = ["E(B-V)", "R_V"]
+    _minwave = 1000.0
+    _maxwave = 33333.33
+
+    def __init__(self):
+        self._parameters = np.array([0.0, 3.1])
+
+    def propagate(self, wave, flux, phase=None):
+        """Propagate the flux."""
+        ebv, r_v = self._parameters
+        return flux * de.CCM89(r_v).extinguish(10000 / wave, Ebv=ebv)
+
+
+class O94Dust(PropagationEffect):
+    """O'Donnell (1994) extinction model dust."""
+
+    _param_names = ["ebv", "r_v"]
+    param_names_latex = ["E(B-V)", "R_V"]
+    _minwave = 1000.0
+    _maxwave = 33333.33
+
+    def __init__(self):
+        self._parameters = np.array([0.0, 3.1])
+
+    def propagate(self, wave, flux, phase=None):
+        """Propagate the flux."""
+        ebv, r_v = self._parameters
+        return flux * de.O94(r_v).extinguish(10000 / wave, Ebv=ebv)
+
+
+class F99Dust(PropagationEffect):
+    """Fitzpatrick (1999) extinction model dust with fixed R_V."""
+
+    _minwave = 1000.0
+    _maxwave = 33333.3
+
+    def __init__(self, r_v=3.1):
+        self._param_names = ["ebv"]
+        self.param_names_latex = ["E(B-V)"]
+        self._parameters = np.array([0.0])
+        self._r_v = r_v
+
+    def propagate(self, wave, flux, phase=None):
+        """Propagate the flux."""
+        ebv = self._parameters[0]
+        return flux * de.F99(self._r_v).extinguish(10000 / wave, Ebv=ebv)
+
+
+class F19Dust(PropagationEffect):
+    """Fitzpatrick (2019) extinction model dust with fixed R_V."""
+
+    _minwave = 1149.43
+    _maxwave = 33333.3
+
+    def __init__(self, r_v=3.1):
+        self._param_names = ["ebv"]
+        self.param_names_latex = ["E(B-V)"]
+        self._parameters = np.array([0.0])
+        self._r_v = r_v
+
+    def propagate(self, wave, flux, phase=None):
+        """Propagate the flux."""
+        ebv = self._parameters[0]
+        return flux * de.F19(self._r_v).extinguish(10000 / wave, Ebv=ebv)
